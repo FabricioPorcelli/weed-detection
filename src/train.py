@@ -33,10 +33,10 @@ ARTIFACTS = [
     "results.png",
     "confusion_matrix.png",
     "confusion_matrix_normalized.png",
-    "PR_curve.png",
-    "F1_curve.png",
-    "P_curve.png",
-    "R_curve.png",
+    "BoxPR_curve.png",
+    "BoxF1_curve.png",
+    "BoxP_curve.png",
+    "BoxR_curve.png",
     "args.yaml",
 ]
 
