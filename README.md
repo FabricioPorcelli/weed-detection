@@ -7,7 +7,7 @@ Sistema de detección de malezas/plagas en cultivos (foco inicial: soja, extensi
 ## Estado del proyecto
 
 - [x] Fase 1 — Setup + EDA: estructura, entorno, dataset, EDA, split 80/10/10 estratificado + `data.yaml` ✓
-- [ ] Fase 2 — Baseline: YOLOv8n @ 640, class weights, 30 épocas (en curso)
+- [x] Fase 2 — Baseline: YOLOv8n @ 640, class weights, 30 épocas (mAP50=0.904, 6.0 MB) ✓
 - [ ] Fase 3 — Optimización edge: exportar a ONNX, cuantizar a INT8, comparar tamaño/mAP
 - [ ] Fase 4 — Benchmark de inferencia: latencia por frame en hardware edge (o simulado)
 - [ ] Fase 5 — Demo: CLI + app Streamlit
@@ -70,7 +70,30 @@ Alternativa manual: descargar el zip desde la página de Kaggle y descomprimirlo
 
 ## Resultados
 
-Pendientes de Fases 2–4. Las métricas (mAP, tamaño, latencia) se versionarán aquí a medida que se generen.
+### Baseline (Fase 2) — YOLOv8n @ 640
+
+Entrenamiento en CPU (30 épocas, 1.49 h). Métricas y curvas versionadas en `reports/baseline/`, pesos en `models/baseline_best.pt` (no versionados).
+
+| Métrica | Valor |
+|---|---|
+| mAP50 | **0.904** |
+| mAP50-95 | 0.608 |
+| Precision | 0.905 |
+| Recall | 0.820 |
+| Tamaño `best.pt` | **6.0 MB** |
+| Parámetros | 3.0 M · 8.1 GFLOPs (fused) |
+
+| Clase | P | R | mAP50 | mAP50-95 |
+|---|---|---|---|---|
+| crop | 0.800 | 0.826 | 0.877 | 0.617 |
+| weed | 0.911 | 0.853 | 0.930 | 0.602 |
+
+- `weed` (minoritaria) rinde mejor que `crop` → los **class weights** (`cls_pw=0.7`) equilibraron la pérdida sin dañar la clase mayoritaria.
+- Convergencia rápida (mAP50 > 0.80 en época 6), consistente con el EDA (dataset mono-clase + boxes grandes).
+- **6.0 MB ya cumple el target de tamaño edge** (<10–15 MB) sin cuantizar; la Fase 3 lo reducirá más vía INT8.
+- Ver `reports/baseline/summary.md` para el análisis completo y la evolución por época.
+
+Pendientes de Fases 3–4 (optimización edge + benchmark de latencia).
 
 ## EDA — Hallazgos (Fase 1.3)
 
