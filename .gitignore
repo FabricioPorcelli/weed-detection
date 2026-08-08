@@ -1,0 +1,33 @@
+# Dataset (no versionar datos crudos ni procesados)
+data/raw/
+data/processed/
+data/*.zip
+data/*.csv
+
+# Modelos entrenados y pesos
+models/
+
+# Entorno de Python
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.jupyter/
+
+# Artefactos de entrenamiento de Ultralytics
+runs/
+*.pt
+*.onnx
+
+# Credenciales y archivos sensibles
+.kaggle/
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
