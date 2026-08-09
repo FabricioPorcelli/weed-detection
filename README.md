@@ -2,15 +2,15 @@
 
 Sistema de detección de malezas/plagas en cultivos (foco inicial: soja, extensible a maíz) mediante visión por computadora con **YOLO**, optimizado para correr en **dispositivos edge** (Raspberry Pi, Jetson Nano/Orin) sin conexión a internet ni GPU de datacenter.
 
-**Por qué edge importa:** la aplicación selectiva de agroquímicos en el campo (pulverizadores inteligentes, tipo DeepAgro/SprAI) ocurre en zonas sin conectividad. El modelo debe decidir en el dispositivo, en tiempo real: <200 ms por frame, <10–15 MB de peso, idealmente cuantizado a INT8.
+**Por qué edge importa:** la aplicación selectiva de agroquímicos en el campo (pulverizadores inteligentes, dispositivos de detección on-device) ocurre en zonas sin conectividad. El modelo debe decidir en el dispositivo, en tiempo real: <200 ms por frame, <10–15 MB de peso, idealmente cuantizado a INT8.
 
 ## Estado del proyecto
 
 - [x] Fase 1 — Setup + EDA: estructura, entorno, dataset, EDA, split 80/10/10 estratificado + `data.yaml` ✓
 - [x] Fase 2 — Baseline: YOLOv8n @ 640, class weights, 30 épocas (mAP50=0.904, 6.0 MB) ✓
 - [x] Fase 3 — Optimización edge: export ONNX FP32 + PTQ INT8, trade-off documentado ✓
-- [ ] Fase 4 — Benchmark de inferencia: latencia por frame en hardware edge (o simulado)
-- [ ] Fase 5 — Demo: CLI + app Streamlit
+- [x] Fase 4 — Benchmark de inferencia: latencia por frame (CPU + edge simulado) ✓
+- [x] Fase 5 — Demo: CLI (imagen/video) + app Streamlit + video demo ✓
 - [ ] Fase 6 — Documentación final
 
 ## Estructura del repo
@@ -34,11 +34,14 @@ weed-detection/
 │   ├── train.py             # entrenamiento (Fase 2)
 │   ├── export.py            # exportación a ONNX (FP32 + INT8 PTQ) (Fase 3)
 │   ├── validate_onnx.py     # validación de mAP de modelos ONNX + tabla comparativa (Fase 3)
+│   ├── benchmark.py         # latencia por frame + tabla final consolidada (Fase 4)
+│   ├── make_demo_video.py   # arma video demo desde frames del dataset (Fase 5)
+│   ├── inference.py         # inferencia standalone CLI: imagen o video (Fase 5)
 │   ├── quantize.py          # cuantización INT8 (pendiente)
 │   ├── benchmark.py         # latencia, tamaño, mAP (pendiente)
 │   └── inference.py         # inferencia standalone CLI (pendiente)
 ├── app/
-│   └── streamlit_app.py     # demo visual (pendiente)
+│   └── streamlit_app.py     # demo visual (imagen + video) (Fase 5)
 └── models/                  # pesos entrenados (no versionado en git)
 ```
 
@@ -130,6 +133,77 @@ El **target de diseño es Jetson** pero no se dispone del hardware físico. Por 
 - No se buildea el **engine de TensorRT** acá: los engines no son portables entre GPUs (se generan para el SM específico de la Jetson target), y no se dispone de hardware Jetson físico para generarlo ni medir su latencia real.
 - El **path ONNX es el entregable portable** y benchmarkable en CPU acá; buildar el engine de TensorRT sería el paso correspondiente cuando se disponga de una Jetson, y queda como **TODO posterior**.
 - El **benchmark real de latencia en Jetson** se documenta como limitación en la Fase 4, con sustitución por benchmark en CPU x86 limitando threads para recursos acotados.
+
+## Benchmark de inferencia (Fase 4)
+
+Medición de latencia por frame sobre el split `test` (131 imgs, 3 iteraciones, warmup 5). Reportado en `reports/benchmark/benchmark.csv` y `benchmark.md`. Target de diseño: **Jetson** (sin hardware físico → benchmark en CPU x86, modo `edge` con threads=2 como aproximación conservadora).
+
+### Tabla final consolidada (4.3)
+
+| modelo | formato | tamaño (MB) | mAP50 | mAP50-95 | modo | lat. mean (ms) | lat. p95 (ms) | FPS |
+|---|---|---|---|---|---|---|---|---|
+| baseline | `.pt` FP32 | 6.25 | **0.9034** | **0.6093** | full (12 threads) | 41.6 | 46.2 | **24.0** |
+| baseline | `.pt` FP32 | 6.25 | 0.9034 | 0.6093 | edge (2 threads)  | 40.3 | 43.1 | 24.8 |
+| baseline | `.onnx` FP32 | 12.37 | 0.9034 | 0.6093 | full | 75.8 | 103.4 | 13.2 |
+| baseline | `.onnx` FP32 | 12.37 | 0.9034 | 0.6093 | edge | 74.5 | 101.6 | 13.4 |
+| baseline | `.onnx` INT8 (PTQ) | **3.60** | 0.8850 | 0.5956 | full | 86.2 | 120.1 | 11.6 |
+| baseline | `.onnx` INT8 (PTQ) | **3.60** | 0.8850 | 0.5956 | edge | 86.7 | 117.9 | 11.5 |
+
+### Lectura de los resultados (trade-off honesto)
+
+- **En CPU x86 de desarrollo, `.pt` (PyTorch nativo) es el más rápido** (~24 FPS) → PyTorch usa un path de inferencia altamente optimizado para CPU.
+- **ONNX Runtime en CPU no acelera la inferencia** respecto a PyTorch, e incluso **INT8 es levemente más lento que FP32** (~12 vs ~13 FPS). Esto es esperable: la ventaja de INT8 se manifiesta en hardware edge con soporte INT8 nativo (Jetson/TensorRT, ARM con NEON/NNAPI, NPU), **no en CPU x86 de escritorio**. El cuantizado acá gana en **tamaño** (3.6 vs 12.4 MB) y **porteabilidad edge**, no en latencia sobre esta CPU.
+- La latencia `full` vs `edge` es casi idéntica → a batch=1 estos modelos pequeños no son CPU-bound; el cuello es el acceso a memoria y el overhead del runtime.
+
+### Limitación conocida (Jetson)
+
+El **target de diseño es Jetson** pero no se dispone del hardware físico:
+- El benchmark real de TensorRT sobre Jetson queda como **limitación documentada**.
+- Los números aquí son de CPU x86 con threads acotados como **aproximación conservadora**; una Jetson con TensorRT sería sustancialmente más rápida en inferencia (GPU + engine INT8 optimizado), por lo que estos valores son un **techo superior de latencia**, no una predicción de Jetson.
+- **Conclusión honesta:** el benchmark valida que el pipeline de inferencia corre y mide variabilidad, pero **no demuestra el speedup de INT8** que es uno de los argumentos centrales del proyecto. Buildar el engine de TensorRT en una GPU NVIDIA disponible y medir INT8 vs FP32 ahí queda como paso posterior opcional.
+
+```bash
+python src/benchmark.py                    # full + edge, los 3 modelos
+python src/benchmark.py --modes edge --edge-threads 4
+```
+
+## Demo (Fase 5)
+
+La decisión 5.2 fue **(b) imagen + video**: el demo soporta upload de imagen y de video, y muestra el modelo elegido (baseline vs cuantizado) para evidenciar el trade-off en vivo.
+
+### App Streamlit
+
+```bash
+streamlit run app/streamlit_app.py
+# si aparece segfault o warning "torch.classes" en consola, desactivá el watcher:
+ streamlit run app/streamlit_app.py --server.fileWatcherType none
+```
+
+Selector de modelo (`.pt` / `.onnx` FP32 / `.onnx` INT8), sliders de confianza / IoU / `imgsz`, métricas del modelo (mAP, tamaño, latencia) leídas de `reports/`. Subís imagen → detección con boxes + confianza → descarga CSV. Subís video → procesado frame-a-frame con FPS reportado.
+
+### CLI standalone (`src/inference.py`)
+
+```bash
+# carpeta de imágenes -> imgs annotated + CSV
+python src/inference.py --source data/processed/images/test --model models/baseline_best.pt
+
+# video -> video annotated + CSV de frames
+python src/inference.py --source demo/demo_input.mp4 --model models/baseline_int8.onnx
+
+# una sola imagen
+python src/inference.py --source una_imagen.jpg --conf 0.35
+```
+
+Outputs en `demo/out/` (o `--out`): imágenes/video con boxes dibujados + `detections.csv` (`image, class, conf, x1, y1, x2, y2`).
+
+### Video demo (frames del dataset)
+
+`src/make_demo_video.py` arma un `.mp4` con N imágenes del split `test` concatenadas, para demostrar el pipeline end-to-end (captura continua → detección → CSV). Los frames provienen del propio dataset (mismo dominio que el entrenamiento) — **no representa rendimiento en campo real**, solo demuestra el funcionamiento del pipeline.
+
+```bash
+python src/make_demo_video.py --n 30 --fps 10 --repeat 2   # -> demo/demo_input.mp4
+python src/inference.py --source demo/demo_input.mp4 --model models/baseline_int8.onnx
+```
 
 ## EDA — Hallazgos (Fase 1.3)
 
