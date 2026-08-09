@@ -1,0 +1,7 @@
+modelo,formato,tamaño_MB,mAP50,mAP50-95,modo,threads,latency_mean_ms,latency_p95_ms,latency_min_ms,latency_median_ms,latency_max_ms,latency_std_ms,fps_mean,n_frames
+baseline_best.pt,pt,6.25,0.9034,0.6093,full,12,41.61,46.23,32.38,40.85,96.65,5.31,24.03,393
+baseline_best.pt,pt,6.25,0.9034,0.6093,edge,2,40.29,43.12,32.24,40.57,50.01,2.21,24.82,393
+baseline.onnx,onnx,12.37,0.9034,0.6093,full,12,75.83,103.38,43.54,74.04,138.18,14.62,13.19,393
+baseline.onnx,onnx,12.37,0.9034,0.6093,edge,2,74.46,101.56,42.89,72.60,114.69,14.18,13.43,393
+baseline_int8.onnx,onnx,3.60,0.8850,0.5956,full,12,86.21,120.06,53.30,82.95,170.66,15.97,11.60,393
+baseline_int8.onnx,onnx,3.60,0.8850,0.5956,edge,2,86.75,117.91,57.12,84.52,151.32,15.69,11.53,393
