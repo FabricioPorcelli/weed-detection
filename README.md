@@ -95,6 +95,29 @@ python src/make_demo_video.py --n 30 --fps 10 --repeat 2   # -> demo/demo_input.
 python src/inference.py --source demo/demo_input.mp4 --model models/baseline_int8.onnx
 ```
 
+### Deploy en Streamlit Cloud
+
+La app está pensada para correr desplegada en Streamlit Community Cloud sin necesidad de subir los pesos al repo. Los pesos y el video demo se distribuyen mediante un **GitHub Release** y la app los descarga al arrancar (cacheado, una sola vez por sesión).
+
+Para (re)crear el release con `gh`:
+
+```bash
+gh release create models-v1 \
+    models/baseline_best.pt models/baseline.onnx models/baseline_int8.onnx \
+    demo/demo_input.mp4 \
+    --repo FabricioPorcelli/weed-detection \
+    --notes "Pesos del baseline + ONNX FP32/INT8 PTQ + video demo"
+```
+
+> El tag del release (`models-v1`) y el repo están en `src/download_models.py` y se pueden overridear con las variables de entorno `MODEL_RELEASE_TAG` y `MODEL_RELEASE_REPO`.
+
+Para correr local sin entrenar (bajar los pesos desde el release):
+
+```bash
+python src/download_models.py            # descarga los 4 assets a models/ y demo/
+python src/download_models.py --force    # re-descargar
+```
+
 ### Capturas del demo
 
 **Detección sobre imagen estática (CLI):**
@@ -128,7 +151,8 @@ weed-detection/
 │   ├── validate_onnx.py     # validación de mAP + tabla comparativa (Fase 3)
 │   ├── benchmark.py         # latencia por frame + tabla final (Fase 4)
 │   ├── make_demo_video.py   # arma video demo desde frames del dataset (Fase 5)
-│   └── inference.py         # inferencia CLI: imagen o video (Fase 5)
+│   ├── inference.py         # inferencia CLI: imagen o video (Fase 5)
+│   └── download_models.py   # descarga de pesos desde GitHub Release (deploy)
 ├── app/
 │   └── streamlit_app.py     # demo visual (imagen + video) (Fase 5)
 ├── reports/                 # métricas, curvas y tablas versionadas
