@@ -8,7 +8,7 @@ Sistema de detección de malezas/plagas en cultivos (foco inicial: soja, extensi
 
 - [x] Fase 1 — Setup + EDA: estructura, entorno, dataset, EDA, split 80/10/10 estratificado + `data.yaml` ✓
 - [x] Fase 2 — Baseline: YOLOv8n @ 640, class weights, 30 épocas (mAP50=0.904, 6.0 MB) ✓
-- [ ] Fase 3 — Optimización edge: exportar a ONNX, cuantizar a INT8, comparar tamaño/mAP
+- [x] Fase 3 — Optimización edge: export ONNX FP32 + PTQ INT8, trade-off documentado ✓
 - [ ] Fase 4 — Benchmark de inferencia: latencia por frame en hardware edge (o simulado)
 - [ ] Fase 5 — Demo: CLI + app Streamlit
 - [ ] Fase 6 — Documentación final
@@ -32,7 +32,8 @@ weed-detection/
 │   ├── download_dataset.py  # descarga del dataset desde Kaggle
 │   ├── make_splits.py       # split 80/10/10 estratificado + data.yaml
 │   ├── train.py             # entrenamiento (Fase 2)
-│   ├── export.py            # exportación a ONNX / edge format (pendiente)
+│   ├── export.py            # exportación a ONNX (FP32 + INT8 PTQ) (Fase 3)
+│   ├── validate_onnx.py     # validación de mAP de modelos ONNX + tabla comparativa (Fase 3)
 │   ├── quantize.py          # cuantización INT8 (pendiente)
 │   ├── benchmark.py         # latencia, tamaño, mAP (pendiente)
 │   └── inference.py         # inferencia standalone CLI (pendiente)
@@ -93,7 +94,42 @@ Entrenamiento en CPU (30 épocas, 1.49 h). Métricas y curvas versionadas en `re
 - **6.0 MB ya cumple el target de tamaño edge** (<10–15 MB) sin cuantizar; la Fase 3 lo reducirá más vía INT8.
 - Ver `reports/baseline/summary.md` para el análisis completo y la evolución por época.
 
-Pendientes de Fases 3–4 (optimización edge + benchmark de latencia).
+## Optimización edge (Fase 3)
+
+**Decisiones:**
+- **3.1 Hardware target de diseño:** NVIDIA Jetson (Orin) → TensorRT en producción.
+- **3.3 Cuantización:** Post-Training Quantization (PTQ) a INT8 sobre ONNX.
+- **3.4 Pruning:** no (cuantización es suficiente para el alcance).
+
+### Trade-off tamaño vs mAP (3.5)
+
+Validado sobre el split `val` con `onnxruntime` (CPU). Ver `reports/optimization/comparison.csv` y `comparison.md`.
+
+| modelo | formato | tamaño (MB) | mAP50 | mAP50-95 | Precision | Recall |
+|---|---|---|---|---|---|---|
+| baseline | `.pt` FP32 | 6.25 | **0.9034** | **0.6093** | 0.8556 | 0.8394 |
+| baseline | `.onnx` FP32 | 12.37 | 0.9034 | 0.6093 | 0.8556 | 0.8394 |
+| baseline | `.onnx` INT8 (PTQ) | **3.60** | 0.8850 | 0.5956 | 0.8672 | 0.8199 |
+
+- **Onnx FP32 = .pt en mAP** (misma red, distinta serialización; el .onnx pesa más porque no está comprimido como torch.save).
+- **PTQ INT8 pierde 1.84 pts de mAP50** (0.903 → 0.885) y 1.37 pts de mAP50-95 — dentro del rango aceptable (< 5-7 pts), **no requiere QAT**.
+- **Recorte de tamaño: 6.25 → 3.60 MB = -42%** (vs el `.pt` original). El `.onnx` INT8 es **40% más liviano** y ya está en formato portable para ONNX Runtime / TensorRT.
+- La inferencia INT8 en CPU mostró latencia similar a la FP32 (~60-70 ms/preprocess+inference en este CPU x86); el benchmark real de Jetson se completa en la Fase 4.
+
+### Exportación + validación
+
+```bash
+python src/export.py                 # genera models/baseline.{onnx,_int8.onnx} desde best.pt
+python src/validate_onnx.py           # valida .pt + .onnx + .onnx_int8 sobre val -> reports/optimization/
+python src/validate_onnx.py --split test   # sobre test en vez de val
+```
+
+### Limitación conocida (TensorRT)
+
+El **target de diseño es Jetson** pero no se dispone del hardware físico. Por eso:
+- No se buildea el **engine de TensorRT** acá: los engines no son portables entre GPUs (se generan para el SM específico de la Jetson target), y no se dispone de hardware Jetson físico para generarlo ni medir su latencia real.
+- El **path ONNX es el entregable portable** y benchmarkable en CPU acá; buildar el engine de TensorRT sería el paso correspondiente cuando se disponga de una Jetson, y queda como **TODO posterior**.
+- El **benchmark real de latencia en Jetson** se documenta como limitación en la Fase 4, con sustitución por benchmark en CPU x86 limitando threads para recursos acotados.
 
 ## EDA — Hallazgos (Fase 1.3)
 
@@ -150,7 +186,7 @@ Decisiones: arquitectura **YOLOv8n** (preentrenada COCO, transfer learning), `im
 # CPU (default, ~3.3 min/epoch en Ryzen moderno)
 python src/train.py --epochs 30 --patience 12 --name baseline
 
-# GPU CUDA (ej. RTX 3060 Ti) — mucho más rápido
+# GPU CUDA — mucho más rápido (requiere torch con soporte CUDA y GPU NVIDIA)
 python src/train.py --epochs 30 --patience 12 --name baseline --device 0
 
 # smoke test rápido (2 épocas) para validar el pipeline
