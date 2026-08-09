@@ -30,6 +30,13 @@ try:
 except Exception:
     pass
 
+# --- prep para entornos server/headless (Streamlit Cloud, Docker) ---
+# Ultralytics escribe settings/descarga Arial.ttf en ~/.config/Ultralytics, que
+# puede ser read-only en servers. Lo redirijo a /tmp para que no falle al importar.
+import os
+import tempfile
+os.environ.setdefault("YOLO_CONFIG_DIR", str(Path(tempfile.gettempdir()) / "ultralytics_cfg"))
+
 import cv2
 import numpy as np
 import pandas as pd
@@ -51,23 +58,56 @@ MODEL_CHOICES = {
     "ONNX INT8 (PTQ)": "baseline_int8.onnx",
 }
 
+# choices reales: sólo los archivos que existen en models/ (en cloud pueden no
+# estar commiteados; la app puede recibir un modelo subido por el usuario).
+def available_choices() -> dict:
+    return {k: v for k, v in MODEL_CHOICES.items() if (MODELS_DIR / v).exists()}
+
+
+def save_uploaded_model(upload) -> Path:
+    """Persiste un .pt/.onnx subido a models/ y devuelve su path."""
+    MODELS_DIR.mkdir(exist_ok=True)
+    dst = MODELS_DIR / upload.name
+    dst.write_bytes(upload.getvalue())
+    return dst
+
+
+@st.cache_resource(show_spinner="Preparando modelos…")
+def ensure_models_cached():
+    """Descarga los pesos desde el GitHub Release si no están en models/.
+    Cacheado para que se ejecute una sola vez por sesión (no en cada rerun)."""
+    import sys
+    sys.path.insert(0, str(ROOT))
+    from src.download_models import ensure_models, MODEL_FILES
+    # también bajar el video demo si falta (asset del mismo release)
+    try:
+        from src.download_models import download_one, release_url
+        if not DEMO_VIDEO.exists():
+            download_one(release_url(
+                "FabricioPorcelli/weed-detection", "models-v1", "demo_input.mp4"),
+                DEMO_VIDEO)
+    except Exception:
+        pass
+    return ensure_models(MODELS_DIR)
+
 
 # ----------------------- helpers de modelo -----------------------
 
 @st.cache_resource(show_spinner="Cargando modelo…")
-def load_model_cached(name: str):
+def load_model_cached(path: Path):
     """Carga y cachea el modelo (un solo YOLO por sesión; evita reinstanciar torch)."""
     from ultralytics import YOLO
-    p = MODELS_DIR / name
-    if not p.exists():
-        return None, p
-    if p.suffix == ".onnx":
-        return YOLO(str(p), task="detect"), p
-    return YOLO(str(p)), p
+    if not path.exists():
+        return None, path
+    if path.suffix == ".onnx":
+        return YOLO(str(path), task="detect"), path
+    return YOLO(str(path)), path
 
 
-def model_stats(name: str) -> dict:
+def model_stats(path: Path) -> dict:
+    """Lee tamaño/latencia/mAP para un archivo de modelo (por nombre)."""
     info = {}
+    name = path.name if isinstance(path, Path) else str(path)
     if BENCH_CSV.exists():
         for r in csv.DictReader(BENCH_CSV.open()):
             if Path(r["modelo"]).name == name and r["modo"] == "edge":
@@ -81,6 +121,8 @@ def model_stats(name: str) -> dict:
                 info["mAP50-95"] = float(r["mAP50-95"])
                 info["size_MB"] = float(r["tamaño_MB"])
                 break
+    if path.exists() and "size_MB" not in info:
+        info["size_MB"] = path.stat().st_size / 1e6
     return info
 
 
@@ -139,12 +181,32 @@ def render_sidebar():
         unsafe_allow_html=True)
 
     st.sidebar.markdown("##### Modelo")
-    label = st.sidebar.selectbox(
-        "Variante", list(MODEL_CHOICES.keys()),
-        help="Baseline = PyTorch nativo (más rápido en CPU desktop). "
-             "ONNX FP32 = formato portable. ONNX INT8 = cuantizado, "
-             "más chico y portable para edge (misma mAP, casi sin pérdida).")
-    model_file = MODEL_CHOICES[label]
+    choices = available_choices()
+    default_idx = 0
+    if choices:
+        # preferir INT8 como default si existe (más alineado al demo edge)
+        for i, k in enumerate(choices):
+            if "INT8" in k:
+                default_idx = i
+                break
+        label = st.sidebar.selectbox(
+            "Variante", list(choices.keys()), index=default_idx,
+            help="Baseline = PyTorch nativo (más rápido en CPU desktop). "
+                 "ONNX FP32 = formato portable. ONNX INT8 = cuantizado, "
+                 "más chico y portable para edge (misma mAP, casi sin pérdida).")
+        model_path = MODELS_DIR / choices[label]
+    else:
+        st.sidebar.caption(
+            "No se encontraron modelos en `models/`. Subí un archivo `.pt` o `.onnx`:")
+        up_model = st.sidebar.file_uploader(
+            "Subir modelo", type=["pt", "onnx"], key="model_up",
+            help="Pesos generados con `python src/train.py` y `python src/export.py`. "
+                 "En un deploy sin pesos commiteados, subilos acá.")
+        if up_model is None:
+            st.sidebar.stop()
+        model_path = save_uploaded_model(up_model)
+        label = model_path.name
+        st.sidebar.success(f"Modelo cargado: `{model_path.name}`")
 
     st.sidebar.markdown("---")
     st.sidebar.markdown("##### Detección")
@@ -163,20 +225,21 @@ def render_sidebar():
              "(en este dataset los objetos son grandes, bajar suele costar poco).")
 
     st.sidebar.markdown("---")
-    info = model_stats(model_file)
+    info = model_stats(model_path)
     st.sidebar.markdown("##### Métricas del modelo (modo edge)")
     if info:
         c1, c2 = st.sidebar.columns(2)
-        c1.metric("mAP50", f"{info.get('mAP50', 0):.3f}")
-        c2.metric("mAP50-95", f"{info.get('mAP50-95', 0):.3f}")
+        c1.metric("mAP50", f"{info.get('mAP50', 0):.3f}" if "mAP50" in info else "—")
+        c2.metric("mAP50-95", f"{info.get('mAP50-95', 0):.3f}" if "mAP50-95" in info else "—")
         c1.metric("Tamaño", f"{info.get('size_MB', 0):.2f} MB")
-        c2.metric("Latencia", f"{info.get('latency_ms', 0):.1f} ms")
-        st.sidebar.caption(f"FPS ≈ {info.get('fps', 0):.1f} (edge simulado, CPU threads=2)")
+        c2.metric("Latencia", f"{info.get('latency_ms', 0):.1f} ms" if "latency_ms" in info else "—")
+        if "fps" in info:
+            st.sidebar.caption(f"FPS ≈ {info['fps']:.1f} (edge simulado, CPU threads=2)")
     else:
-        st.sidebar.caption("Corré `python src/benchmark.py` para llenar métricas.")
-    st.sidebar.caption(f"Archivo: `{model_file}`")
+        st.sidebar.caption("Métricas no disponibles (corré `python src/benchmark.py` localmente).")
+    st.sidebar.caption(f"Archivo: `{model_path.name}`")
 
-    return label, model_file, conf, iou, imgsz
+    return label, model_path, conf, iou, imgsz
 
 
 # ----------------------- tabs -----------------------
@@ -355,23 +418,28 @@ def main():
             "Demo del pipeline end-to-end: imagen/video → detección → visualización + CSV. "
             "El **selector de modelo** (sidebar) deja ver el trade-off en vivo entre "
             "*baseline* y *cuantizado INT8*.\n\n"
-            "**Disclaimer:** el modelo se entrenó en un dataset de sésamo (no en soja/maíz) "
-            "y el video demo usa frames del propio dataset — **no representa rendimiento en campo real**."
+            "**Aclaraciones:** el modelo se entrenó sobre un dataset de sésamo "
+            "(no de soja/maíz); el video demo usa frames del propio dataset, "
+            "por lo que **no representa rendimiento en campo real**."
         )
 
-    label, model_file, conf, iou, imgsz = render_sidebar()
-    model, model_path = load_model_cached(model_file)
+    label, model_path, conf, iou, imgsz = render_sidebar()
+    model, _ = load_model_cached(model_path)
     if model is None:
-        st.error(f"No existe el modelo `{model_path}`. Generá los pesos con "
-                 "`python src/export.py` y `python src/train.py`.")
+        # último intento: descargar modelos desde el GitHub release y reintentar
+        ensure_models_cached()
+        model, _ = load_model_cached(model_path)
+    if model is None:
+        st.error(f"No se pudo cargar el modelo `{model_path.name}`. "
+                 "Revisá que el GitHub Release tenga los assets, o subí un "
+                 "`.pt`/`.onnx` desde el sidebar.")
         st.stop()
 
-    model_meta = MODEL_CHOICES[label]
     tab_img, tab_vid = st.tabs(["🖼️ Imagen", "🎞️ Video"])
     with tab_img:
-        tab_image(model, model_meta, conf, iou, imgsz)
+        tab_image(model, label, conf, iou, imgsz)
     with tab_vid:
-        tab_video(model, model_meta, conf, iou, imgsz)
+        tab_video(model, label, conf, iou, imgsz)
 
     st.markdown("---")
     st.caption(
