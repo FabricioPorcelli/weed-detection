@@ -203,7 +203,7 @@ def render_sidebar():
             help="Pesos generados con `python src/train.py` y `python src/export.py`. "
                  "En un deploy sin pesos commiteados, subilos acá.")
         if up_model is None:
-            st.sidebar.stop()
+            st.stop()
         model_path = save_uploaded_model(up_model)
         label = model_path.name
         st.sidebar.success(f"Modelo cargado: `{model_path.name}`")
@@ -422,6 +422,12 @@ def main():
             "(no de soja/maíz); el video demo usa frames del propio dataset, "
             "por lo que **no representa rendimiento en campo real**."
         )
+
+    # descargar pesos desde el GitHub Release si models/ está vacío (deploy en
+    # cloud sin pesos commiteados). Cacheado: una sola vez por sesión.
+    if not any((MODELS_DIR / v).exists() for v in MODEL_CHOICES.values()):
+        with st.spinner("Descargando modelos desde GitHub Release (models-v1)…"):
+            ensure_models_cached()
 
     label, model_path, conf, iou, imgsz = render_sidebar()
     model, _ = load_model_cached(model_path)
