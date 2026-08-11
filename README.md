@@ -1,6 +1,8 @@
-# 🌱 AgroVision-Edge — Detección de malezas en cultivos (edge)
+# 🌱 AgroVision-Edge - Detección de malezas en cultivos (edge)
 
 Sistema de **detección de cultivo vs maleza** con visión por computadora (YOLO), diseñado para **correr en dispositivo edge** (NVIDIA Jetson) sin conexión a internet ni GPU de datacenter. El modelo debe decidir en el dispositivo, en tiempo real, directamente sobre la maquinaria agrícola.
+
+> **🚀 Demo en vivo:** [agrovisionedge.streamlit.app](https://agrovisionedge.streamlit.app/) — probá el modelo desde el navegador (imagen o video). La app incluye **imágenes de ejemplo** del dataset para que se pueda probar sin subir nada.
 
 > **TL;DR (30 s):** se entrenó un YOLOv8n que distingue cultivo de maleza con mAP50 = 0.904; se exportó a ONNX y se cuantizó a INT8, reduciendo el tamaño **de 6.25 a 3.60 MB (−42%)** con apenas 1.84 pts de mAP perdidas; el pipeline completo (entrenamiento → export → cuantización → benchmark → demo) queda corrible y documentado.
 
