@@ -58,6 +58,9 @@ MODEL_CHOICES = {
     "ONNX INT8 (PTQ)": "baseline_int8.onnx",
 }
 
+SAMPLES_DIR = ROOT / "demo" / "samples"
+DEMO_IMAGE_DIR = ROOT / "demo"  # demo_input.mp4 vive acá
+
 # choices reales: sólo los archivos que existen en models/ (en cloud pueden no
 # estar commiteados; la app puede recibir un modelo subido por el usuario).
 def available_choices() -> dict:
@@ -253,27 +256,82 @@ def render_legend():
 
 def tab_image(model, model_meta, conf, iou, imgsz):
     st.subheader("Detección sobre imagen estática")
-    col_up, col_demo = st.columns([3, 1])
-    upload = col_up.file_uploader(
-        "Subí una imagen (.jpg / .png)", type=["jpg", "jpeg", "png"],
-        label_visibility="collapsed", key="img_up")
-    if upload is None:
-        st.info("Esperando una imagen…")
+
+    sample_imgs = sorted(SAMPLES_DIR.glob("*.jpeg")) + sorted(SAMPLES_DIR.glob("*.jpg"))
+
+    # ---- step 1: elección de fuente ----
+    mode = st.radio(
+        "Fuente de la imagen",
+        ["Imagen de ejemplo", "Subir imagen"] if sample_imgs else ["Subir imagen"],
+        horizontal=True, label_visibility="collapsed", key="img_mode")
+
+    source_bytes = None
+    src_name = None
+
+    if mode == "Imagen de ejemplo":
+        if not sample_imgs:
+            st.warning("No se encontraron imágenes de ejemplo en `demo/samples/`.")
+            return
+        c1, c2 = st.columns([3, 2])
+        choice = c1.selectbox("Elegí una imagen de ejemplo",
+                              [p.name for p in sample_imgs], index=0, key="img_ex")
+        demo_path = SAMPLES_DIR / choice
+        # preview pequeño de la original antes de inferir
+        c2.image(str(demo_path), caption=f"Original · {choice}")
+        if st.button("🔍 Detectar", type="primary", use_container_width=True, key="img_run"):
+            source_bytes = demo_path.read_bytes()
+            src_name = demo_path.name
+    else:
+        upload = st.file_uploader(
+            "Subí una imagen (.jpg / .png)", type=["jpg", "jpeg", "png"], key="img_up")
+        if upload is not None:
+            source_bytes = upload.getvalue()
+            src_name = upload.name
+
+    # ---- step 2: si no hay fuente seleccionada, mostrar estado ----
+    if source_bytes is None:
+        # si hay resultado cacheado de antes, lo seguimos mostrando
+        if "img_result" in st.session_state and st.session_state.get("img_result_src"):
+            pass
+        else:
+            st.info("Elegí (o subí) una imagen y pulsá **🔍 Detectar** "
+                    "(en modo ejemplo) para ver las detecciones.")
+            return
+
+    # ---- step 3: correr inferencia sólo si se disparó (button upload o Detectar) ----
+    prev_src = st.session_state.get("img_result_src")
+    if prev_src == src_name and "img_result" in st.session_state and source_bytes is None:
+        # mostramos el resultado cacheado sin recalcular
+        res = st.session_state["img_result"]
+        annotated = res["annotated"]
+        im_bgr = res["im_bgr"]
+        boxes, cls, confs = res["boxes"], res["cls"], res["confs"]
+        dt = res["dt"]
+        names = res["names"]
+    elif source_bytes is not None:
+        im_bgr = cv2.imdecode(np.frombuffer(source_bytes, np.uint8), cv2.IMREAD_COLOR)
+        if im_bgr is None:
+            st.error("No se pudo decodificar la imagen.")
+            return
+        boxes, cls, confs, dt, names = run_inference(model, im_bgr, imgsz, conf, iou)
+        annotated = draw(im_bgr.copy(), boxes, cls, confs)
+        st.session_state["img_result"] = {
+            "annotated": annotated, "im_bgr": im_bgr,
+            "boxes": boxes, "cls": cls, "confs": confs, "dt": dt, "names": names,
+        }
+        st.session_state["img_result_src"] = src_name
+    else:
+        # no hay botón apretado y no hay cache: estado
+        st.info("Elegí (o subí) una imagen y pulsá **🔍 Detectar** "
+                "(en modo ejemplo) para ver las detecciones.")
         return
 
-    im_bgr = cv2.imdecode(np.frombuffer(upload.getvalue(), np.uint8), cv2.IMREAD_COLOR)
-    if im_bgr is None:
-        st.error("No se pudo decodificar la imagen.")
-        return
-
-    boxes, cls, confs, dt, names = run_inference(model, im_bgr, imgsz, conf, iou)
-    annotated = draw(im_bgr.copy(), boxes, cls, confs)
-
+    st.caption(f"**{src_name}**")
     render_legend()
     show_annotated = st.toggle("Mostrar anotada", value=True,
                                 help="Alternar entre imagen original y con detecciones.")
-    st.image((annotated if show_annotated else im_bgr)[:, :, ::-1],
-             channels="RGB", use_container_width=True)
+    out = annotated if show_annotated else im_bgr
+    st.image(out[:, :, ::-1], channels="RGB")
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Detecciones", len(boxes))
